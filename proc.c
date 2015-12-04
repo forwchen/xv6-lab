@@ -19,7 +19,7 @@ extern void forkret(void);
 extern void trapret(void);
 
 static void wakeup1(void *chan);
-
+uint order = 0;
 void
 pinit(void)
 {
@@ -47,6 +47,7 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+  p->order = order++;
   release(&ptable.lock);
 
   // Allocate kernel stack.
@@ -100,6 +101,7 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
+  p->order = order++;
 }
 
 // Grow current process's memory by n bytes.
@@ -161,6 +163,7 @@ fork(void)
   // lock to force the compiler to emit the np->state write last.
   acquire(&ptable.lock);
   np->state = RUNNABLE;
+  np->order = order++;
   release(&ptable.lock);
 
   return pid;
@@ -273,13 +276,26 @@ scheduler(void)
 
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
+    uint min_order = 1<<30;
+    uint idx = -1;
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+        if (p->state == RUNNABLE && p->order < min_order){
+            min_order = p->order;
+            idx = p - ptable.proc;
+        }
+    if (idx == -1)
+    {
+        release(&ptable.lock);
         continue;
+    }
+    //for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    //  if(p->state != RUNNABLE)
+    //    continue;
 
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
       // before jumping back to us.
+      p = ptable.proc + idx;
       proc = p;
       switchuvm(p);
       p->state = RUNNING;
@@ -289,7 +305,8 @@ scheduler(void)
       // Process is done running for now.
       // It should have changed its p->state before coming back.
       proc = 0;
-    }
+      //break;
+    //}
     release(&ptable.lock);
 
   }
@@ -321,6 +338,7 @@ yield(void)
 {
   acquire(&ptable.lock);  //DOC: yieldlock
   proc->state = RUNNABLE;
+  proc->order = order++;
   sched();
   release(&ptable.lock);
 }
@@ -394,6 +412,7 @@ wakeup1(void *chan)
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
     if(p->state == SLEEPING && p->chan == chan)
       p->state = RUNNABLE;
+      p->order = order++;
 }
 
 // Wake up all processes sleeping on chan.
@@ -420,6 +439,7 @@ kill(int pid)
       // Wake process from sleep if necessary.
       if(p->state == SLEEPING)
         p->state = RUNNABLE;
+        p->order = order++;
       release(&ptable.lock);
       return 0;
     }
@@ -515,7 +535,7 @@ showmp(uint a, uint b)
                 cprintf("Writeable");
             }
             else cprintf("-");
-            cprintf("\n");
+            cprintf("  %d\n", flags&PTE_D);
 
         }
         if (va == vb)
